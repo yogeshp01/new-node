@@ -1,0 +1,20 @@
+{
+  "name": "apnanode",
+  "version": "1.0.0",
+  "description": "kuch nahi",
+  "main": "apnanode.js",
+  "scripts": {
+  #"sonar-scanner": "node_modules/sonar-scanner/bin/sonar-scanner",
+    "start": "node apnanode.js"
+  },
+  "engines": {
+    "node": "6.x"
+  },
+  "dependencies": {
+    "cfenv": "*",
+    "express": "*"
+  }
+  #"devDependencies": {
+   # "sonar-scanner": "^3.0.3"
+  #}
+}

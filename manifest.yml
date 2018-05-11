@@ -1,0 +1,8 @@
+---
+applications:
+- name: apnanode
+  memory: 256M
+  domain: mybluemix.net
+  instances: 1
+  host: apnanode
+timeout: 120
