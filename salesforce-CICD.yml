@@ -1,0 +1,1261 @@
+parameters:
+- name: Project_Name
+  displayName: Project_Name
+  type: string
+  default: ""
+- name: PR_ID
+  displayName: PullRequest_ID
+  type: string
+  default: ""
+- name: VSTS_USERNAME
+  displayName: VSTS_USERNAME
+  type: string
+  default: "null"
+- name: VSTS_PASSWORD
+  displayName: VSTS_PASSWORD
+  type: string
+  default: "null"
+- name: SF_VAL_USER
+  displayName: SF_VAL_USER
+  type: string
+  default: "null"
+- name: SF_VAL_PASS
+  displayName: SF_VAL_PASS
+  type: string
+  default: "null"
+- name: SFSIT_USER
+  displayName: SFSIT_USER
+  type: string
+  default: "null"
+- name: SFSIT_PASS
+  displayName: SFSIT_PASS
+  type: string
+  default: "null"
+- name: SFUAT_USER
+  displayName: SFUAT_USER
+  type: string
+  default: "null"
+- name: SFUAT_PASS
+  displayName: SFUAT_PASS
+  type: string
+  default: "null"
+- name: SFPROD_USER
+  displayName: SFPROD_USER
+  type: string
+  default: "null"
+- name: SFPROD_PASS
+  displayName: SFPROD_PASS
+  type: string
+  default: "null"
+- name: artifactory_api_key
+  displayName: artifactory_api_key
+  type: string
+  default: "null"
+- name: Enable_JAVA8
+  type: boolean
+  default: False
+- name: sonarqube_service_name
+  type: string
+  default: ""
+- name: Enable_SonarQube
+  type: boolean
+  default: True
+- name: sonarqube_project_key
+  type: string
+  default: "null"
+- name: sonarqube_project_name
+  type: string
+  default: "null"
+- name: Enable_Checkmarx
+  type: boolean
+  default: True
+- name: checkmarx_project_name
+  type: string
+  default: ""
+- name: checkmarx_team_name
+  type: string
+  default: ""
+- name: checkmarx_service_name
+  type: string
+  default: ""
+- name: checkmarx_high_severity
+  type: string
+  default: "0"
+- name: checkmarx_medium_severity
+  type: string
+  default: "0"
+- name: runner
+  displayName: runner
+  type: string
+  default: "validatenDeploy"
+# - name: PR_IDs
+#   displayName: PullRequest_IDs
+#   type: string
+#   default: ""
+- name: CHECKMARX_SCAN_COMPONENTS
+  type: boolean
+  default: False
+- name: Selective_Validation
+  type: boolean
+  default: True
+- name: PROD_PR_VALIDATION_ONLY
+  type: boolean
+  default: False
+# - name: 'ApiiroConnection'
+#   type: string
+#   default: 'apiiro'
+# - name: 'ApiiroBuildScanTimeoutMinutes'
+#   type: number
+#   default: '30'
+# - name: 'ApiiroBypassOnServiceError'
+#   type: boolean
+#   default: 'true'
+# - name: 'ApiiroBypassOnTimeout'
+#   type: boolean
+#   default: 'true'
+# - name: 'ApiiroBypassOnScanFailure'
+#   type: boolean
+#   default: 'false'
+
+stages:
+- ${{ if contains(variables['Build.SourceBranchName'], 'sit') }}:
+  - stage: 'SIT_CICD_Stage'
+    displayName: 'SIT_CICD_Stage'
+
+    jobs:
+    - job: CICD_job
+      displayName: SIT_CICD Job
+
+      pool:
+        vmImage: ubuntu-latest
+
+      steps:
+      - checkout: self
+        persistCredentials: True
+
+      - task: Bash@3
+        displayName: 'Collect Repository Details'
+        inputs:
+          targetType: inline
+          script: | 
+            #echo "PR_ID - ${{ parameters.PR_ID }}"
+            curl -X GET -u "${{ parameters.VSTS_USERNAME }}":"${{ parameters.VSTS_PASSWORD }}" $(System.CollectionUri)$(System.TeamProject)/_apis/git/repositories/$(Build.Repository.Name)/pullRequests/${{ parameters.PR_ID }}/labels >> pr_label_details.txt
+            
+            curl -X GET -u ${{ parameters.VSTS_USERNAME }}:${{ parameters.VSTS_PASSWORD }} $(System.CollectionUri)$(System.TeamProject)/_apis/git/repositories/$(Build.Repository.Name)/pullRequests/${{ parameters.PR_ID }} >> pr_details.txt
+            ls -al
+            pwd
+            echo "@@get label details@@"
+            #jq -r '.value[].name' pr_label_details.txt
+            #cp pr_label_details.txt GIT_LABELS.txt
+            # cat pr_label_details.txt
+
+            GIT_LABELS=$(jq -r '.value[].name' pr_label_details.txt)
+            # echo ${GIT_LABELS}
+            if [[ ${GIT_LABELS} == "" ]]
+            then
+                # echo $GIT_LABELS
+                echo -e "Pullrequest does not have naming conventions specified under labels."
+                echo "##vso[task.logissue type=error]No naming conventions specified under labels.Check if label is added in PR, If yes check if Access token added in library is working."
+                exit 1
+            else
+                echo -e "fetched the label details"
+                echo ${GIT_LABELS}
+            fi 
+
+            # echo "Making the GIT_LABELS available as an environment variable."
+            echo "##vso[task.setvariable variable=GIT_LABELS;]$GIT_LABELS"
+            
+
+            SOURCE_BRANCH=$(jq -r .sourceRefName pr_details.txt | cut -d "/" -f 3-)
+            TARGET_BRANCH=$(jq -r .targetRefName pr_details.txt | cut -d "/" -f 3-)
+
+            echo "$SOURCE_BRANCH------$TARGET_BRANCH"
+            echo "Making the Branches available as an environment variable."
+            echo "##vso[task.setvariable variable=SOURCE_BRANCH;]$SOURCE_BRANCH"
+            echo "##vso[task.setvariable variable=TARGET_BRANCH;]$TARGET_BRANCH"
+
+
+      - task: Bash@3
+        displayName: 'Validating pull request'
+        inputs:
+          targetType: inline
+          script: |   
+            env | grep GIT_LABELS
+            echo "check value of label from previous task-------[[ ${GIT_LABELS} ]]"
+            MERGE_STATUS=$(jq -r .mergeStatus pr_details.txt)
+            IS_DRAFT=$(jq -r .isDraft pr_details.txt)
+            PR_STATUS=$(jq -r .status pr_details.txt)
+
+            echo "'${MERGE_STATUS}'---'${IS_DRAFT}'-----'${PR_STATUS}'"
+            if [[ ${MERGE_STATUS} != "succeeded" || ${IS_DRAFT} == "true" || ${PR_STATUS} == "completed" || ${PR_STATUS} == "abandoned" ]]
+
+            then
+              echo -e "Pullrequest is not deployable, Please check."
+              echo "##vso[task.logissue type=error]Pullrequest is not deployable, Please check."
+              exit 1
+            else
+              echo -e "Pull request is deployable"
+            fi
+
+
+      - task: Bash@3
+        displayName: 'SIT_Checking Branch Sync status'
+        inputs:
+          targetType: inline
+          script: |      
+            git config --global user.email "c4edeployuser@ab-inbev.com"
+            git config --global user.name "c4edeployuser"
+            BS=`git rev-list --right-only --count remotes/origin/${SOURCE_BRANCH}..remotes/origin/${TARGET_BRANCH}`
+              if [[ ${BS} -gt 0 ]]
+              then
+              echo -e "Your Source Branch is Behind the Target Branch by ${BS} commits \n"
+              echo -e "\n *** Performing Automated Reverse Sync *** \n"
+              git checkout ${TARGET_BRANCH}
+              git checkout ${SOURCE_BRANCH}
+              git merge ${TARGET_BRANCH} -m "Automatic Reverse Sync by Azure Pipeline"
+              git push
+            #   git -c http.extraheader="AUTHORIZATION: bearer $(System.AccessToken)" push
+            else
+            echo -e "\n***Branch is in Sync with the Target Branch***\n"
+            fi
+
+
+
+      - task: Bash@3
+        displayName: Preparing Project Manifest
+        inputs:
+          targetType: inline
+          script: |
+            echo "Source_branch=${SOURCE_BRANCH}..... Target_branch=${TARGET_BRANCH}"
+            
+            MERGE_BASE=$(git merge-base refs/remotes/origin/$SOURCE_BRANCH refs/remotes/origin/$TARGET_BRANCH)
+            git diff --name-only --diff-filter=MARC $MERGE_BASE refs/remotes/origin/$SOURCE_BRANCH > gitdiffs.txt
+            cp gitdiffs.txt diff-manifest.txt
+            touch template.txt
+            pwd
+            ls -al
+            cat diff-manifest.txt
+            # cat gitdiffs.txt
+            for line in `grep -E '.cmp|.evt|.cls|.page|.component|.email|.resource|.trigger|.asset|.wdash|.wlens|.wdf|documents|reports|aura|dashboards|siteDotComSites>' gitdiffs.txt`
+              do
+                if ([[ $line == *[.]* ]] && [[ ! $line =~ .report ]] && [[ ! $line =~ .js ]] && [[ ! $line =~ .dashboard ]] && [[ ! $line =~ .css ]] && [[ ! $line =~ .design ]] && [[ ! $line =~ .auradoc ]] && [[ ! $line =~ .svg ]] ) && [[ ! $line == *meta.xml* ]]; then
+                  echo  $line-meta.xml >>  template.txt
+                fi
+                if  [[ $line =~ src/email/ ]] || [[ $line =~ src/reports/ ]] || [[ $line =~ src/dashboards/ ]] || [[ $line == *"/documents/*/"* ]] ; then
+                  echo $(echo $line | cut -d'/' -f1-3)-meta.xml >>  template.txt
+                fi
+                              
+                if [[ $line =~ /aura/ ]] ;then
+                  echo $line|cut -d'/' -f1-3
+                  find $(echo $line|cut -d'/' -f1-3) >> template.txt
+                fi
+            done
+
+            FILES_COUNT=`grep -E '.cls|.apex|.apexp|.page|.component|.trigger|.tgr|.object|.report|.workflow|.js|.json' gitdiffs.txt | wc -l`
+            echo "No of files to be scanned for CheckMarx---->$FILES_COUNT"
+            if [[ $FILES_COUNT != 0 ]]
+            then 
+                echo "##vso[task.setvariable variable=CHECKMARX_SCAN_COMPONENTS;]True"
+            fi
+
+            echo "****pulled changes below-----cat template.txt***"
+            cat template.txt
+            
+            if [[ `grep -c src/lwc diff-manifest.txt` -gt 0 ]] ;then
+              for line in `grep -R src/lwc/ diff-manifest.txt | cut --delimiter=/ --fields=3`
+              do
+              echo "here"
+              find src/lwc/$line/ >> lwc.txt
+                echo "added lwc components"
+              done
+                echo "here2"
+              fi
+            cat lwc.txt >> template.txt || true
+            cat template.txt | uniq > template1.txt
+            sort -u template1.txt gitdiffs.txt > Project-Manifest.txt
+            echo "****Project-Manifest.txt*****"
+            # cat Project-Manifest.txt
+            #sed /-meta.xml-meta.xml/d Project-Manifest.txt
+            echo "******removing -meta.xml********"
+            sed -i '/-meta.xml-meta.xml/d' Project-Manifest.txt
+            sed -i '/.flow-meta.xml/d' Project-Manifest.txt
+            sed -i '/.html-meta.xml/d' Project-Manifest.txt
+            sed -i '/unfiled$public-meta.xml/d' Project-Manifest.txt
+            sed -i '/.flowDefinition-meta.xml/d' Project-Manifest.txt
+            sed -i '/.flexipage-meta.xml/d' Project-Manifest.txt
+            cat Project-Manifest.txt
+            # cat GIT_LABELS.txt
+            
+            
+      - task: JavaToolInstaller@0
+        displayName: Use Java 8
+        condition: and(succeeded(), eq('True', '${{ parameters.Enable_JAVA8 }}'))
+        inputs:
+          jdkArchitectureOption: x64
+          jdkSourceOption: PreInstalled
+
+
+      - task: Bash@3
+        displayName: Prepare Build Requirements
+        inputs:
+          targetType: inline
+          script: |
+            echo $(Build.BuildId) -- $(Build.BuildNumber)
+            mkdir tmp || true
+            rm -rf tmp/*
+            ls -al
+            # cat -n $0
+            pwd
+            git branch --show-current
+            git checkout ${SOURCE_BRANCH}
+            git branch --show-current
+            rsync -a --files-from=Project-Manifest.txt --ignore-errors . tmp
+              if [[ $? -gt 0 ]] || [[ ! -s Project-Manifest.txt ]]
+                then
+                echo "Rsync project manifest files preparation Failed"
+                echo "##vso[task.logissue type=error]Rsync project manifest files preparation Failed."
+                exit 1
+              else
+                rm -rf src/*
+                cp -R tmp/src/* src/
+                rm -rf tmp || true
+                find src
+            echo "******git label content----$GIT_LABELS******"
+                echo $GIT_LABELS > GIT_LABELS.txt
+            cat GIT_LABELS.txt
+                ## Read the Values of label in an array
+                for APPLICATION_PREFIX in $(cat < "GIT_LABELS.txt"); do
+                mv src/objects/$APPLICATION_PREFIX/*.object src/objects/ || true
+                mv src/workflows/$APPLICATION_PREFIX/*.workflow src/workflows/ || true
+                mv src/sharingRules/$APPLICATION_PREFIX/*.sharingRules src/sharingRules/ || true
+                mv src/wave/$APPLICATION_PREFIX/* src/wave/ || true
+                cp Build/$APPLICATION_PREFIX/build.xml $(Build.SourcesDirectory)/build.xml || true
+                mv undeploy/$APPLICATION_PREFIX/destructiveChangesPre.xml src/ || true
+                mv undeploy/$APPLICATION_PREFIX/destructiveChangesPost.xml src/ || true
+                echo "Rsync project manifest files preparation Done"
+                done
+              fi 
+            ls -ltr
+            pwd
+            
+            APPLICATION_PREFIX=$(cat < "GIT_LABELS.txt")
+            echo $APPLICATION_PREFIX
+            for APPLICATION_PREFIX in $(cat < "GIT_LABELS.txt"); do
+            cp  Build/$APPLICATION_PREFIX/build.xml  build.xml || true
+            if [  -f src/labels/$APPLICATION_PREFIX.labels ]; then
+              if [ ! -f src/labels/CustomLabels.txt ]; then
+                mkdir src/labels || true
+                rm src/labels/CustomLabels.labels || true
+                printf '<?xml version="1.0" encoding="UTF-8"?>\n<CustomLabels xmlns="http://soap.sforce.com/2006/04/metadata">\n' > src/labels/CustomLabels.txt
+                find src/labels/$APPLICATION_PREFIX.labels -maxdepth 1 -iname '*.labels' -not -name 'CustomLabels.labels' -exec cat {} +>> src/labels/CustomLabels.txt || true
+              else
+                find src/labels/$APPLICATION_PREFIX.labels -maxdepth 1 -iname '*.labels' -not -name 'CustomLabels.labels' -exec cat {} +>> src/labels/CustomLabels.txt || true
+              fi
+            fi
+            done
+            if [ -f src/labels/CustomLabels.txt ]; then
+              printf '\n</CustomLabels>' >> src/labels/CustomLabels.txt || true
+            fi
+            
+            rm src/labels/*.labels || true
+            mv src/labels/CustomLabels.txt src/labels/CustomLabels.labels || true
+            ls -al
+            echo "java version"
+            java -version          
+            # ant generatePackage
+            # if [ $? != 0 ]; then
+            #   echo "##vso[task.logissue type=error]Build failed while generating package."
+            #   exit 1
+            # fi
+
+            # ls -al
+            cat Project-Manifest.txt
+            runc=$(grep  -c -E "classes|components|pages|triggers|sharingRules|objects|customMetadata|datacategorygroups|flows|profiles|queues|remoteSiteSettings|roles|territories|workflows" Project-Manifest.txt)
+            echo "runc=$runc"
+            if [  $runc = 0 ]; then
+              echo "***No Components eligible for Unit Tests***"       
+              runner=validateNoTests
+              echo "value of runner--- ${runner}"
+            else
+              echo "***Components eligible for Unit Tests found***" 
+              runner=validate
+              echo "value of runner--- ${runner}"
+            fi
+            echo "##vso[task.setvariable variable=runner;]${runner}"
+            echo "value of runner--- ${runner}"
+
+
+      - task: SonarQubePrepare@5
+        displayName: Prepare analysis on SonarQube
+        condition: and(succeeded(), eq('True', '${{ parameters.Enable_SonarQube }}'))
+        inputs:
+          SonarQube: '${{ parameters.sonarqube_service_name }}'
+          scannerMode: 'CLI'
+          configMode: 'manual'
+          cliProjectKey: '${{ parameters.sonarqube_project_key }}'
+          cliProjectName: '${{ parameters.sonarqube_project_name }}'
+          cliSources: src
+          extraProperties: |
+            sonar.branch.name=$(SOURCE_BRANCH)
+            sonar.qualitygate.wait=true
+
+      - task: SonarQubeAnalyze@5
+        condition: and(succeeded(), eq('True', '${{ parameters.Enable_SonarQube }}'))
+        displayName: Sonar code Quality Scanner      
+        inputs:
+          jdkversion: 'JAVA_HOME_11_X64'
+
+
+      - task: SonarQubePublish@5
+        condition: and(succeeded(), eq('True', '${{ parameters.Enable_SonarQube }}'))
+        displayName: Verify Quality Gate
+        # inputs:
+        #   pollingTimeoutSec: '300'
+
+
+      - task: sonar-buildbreaker@8
+        condition: and(succeeded(), eq('True', '${{ parameters.Enable_SonarQube }}'))
+        inputs:
+          SonarQube: '${{ parameters.sonarqube_service_name }}'
+      
+
+      # - task: ApiiroBuildScanTask@0
+      #   displayName: 'Apiiro CI Scan Analysis'
+      #   inputs:
+      #     Apiiro: ${{ parameters.ApiiroConnection }}
+      #     ApiiroBuildScanTimeoutMinutes: ${{ parameters.ApiiroBuildScanTimeoutMinutes }}
+      #     ApiiroBypassOnServiceError: ${{ parameters.ApiiroBypassOnServiceError }}
+      #     ApiiroBypassOnTimeout: ${{ parameters.ApiiroBypassOnTimeout }}
+      #     ApiiroBypassOnScanFailure: ${{ parameters.ApiiroBypassOnScanFailure }}      
+
+      # - task: Application security testing@2022
+      #   displayName: Code security check
+      #   condition: and(succeeded(), eq('True', '${{ parameters.Enable_Checkmarx }}'), eq('True', variables.CHECKMARX_SCAN_COMPONENTS))
+      #   inputs:
+      #     projectName: '${{ parameters.checkmarx_project_name }}'
+      #     enableProxy: false
+      #     enableSastScan: true
+      #     CheckmarxService: '${{ parameters.checkmarx_service_name }}'
+      #     fullTeamName: '${{ parameters.checkmarx_team_name }}'
+      #     folderExclusion: 'cvs, .svn, .hg , .git, .bzr, bin , obj,  backup, .idea, node_modules, test, e2e, docs, vscode, .vscode, tests, __tests__, manifests'
+      #     fileExtension: '!**/_cvs/**/*, !**/.svn/**/*,   !**/.hg/**/*,   !**/.git/**/*,  !**/.bzr/**/*, !**/bin/**/*, !**/obj/**/*,  !**/backup/**/*, !**/.idea/**/*, !**/*.DS_Store, !**/*.ipr,     !**/*.iws, !**/*.bak,     !**/*.tmp,       !**/*.aac,      !**/*.aif,      !**/*.iff,     !**/*.m3u, !**/*.mid, !**/*.mp3, !**/*.mpa,     !**/*.ra,        !**/*.wav,      !**/*.wma,      !**/*.3g2,     !**/*.3gp, !**/*.asf, !**/*.asx, !**/*.avi,     !**/*.flv,       !**/*.mov,      !**/*.mp4,      !**/*.mpg,     !**/*.rm,  !**/*.swf, !**/*.vob, !**/*.wmv,     !**/*.bmp,       !**/*.gif,      !**/*.jpg,      !**/*.png,     !**/*.psd, !**/*.tif, !**/*.swf, !**/*.jar,     !**/*.zip,       !**/*.rar,      !**/*.exe,      !**/*.dll,     !**/*.pdb, !**/*.7z,  !**/*.gz, !**/*.tar.gz,  !**/*.tar,       !**/*.gz,       !**/*.ahtm,     !**/*.ahtml,   !**/*.fhtml, !**/*.hdm, !**/*.hdml,    !**/*.hsql,      !**/*.ht,       !**/*.hta,      !**/*.htc,     !**/*.htd, !**/*.war, !**/*.ear, !**/*.htmls,   !**/*.ihtml,     !**/*.mht,      !**/*.mhtm,     !**/*.mhtml,   !**/*.ssi, !**/*.stm, !**/*.stml,    !**/*.ttml,      !**/*.txn,      !**/*.xhtm,     !**/*.xhtml,   !**/*.class, !**/*.iml, !Checkmarx/Reports/*.*'
+      #     scanTimeout: '10'
+      #     customPreset: 'ASA_SDLC_Ready'
+      #     vulnerabilityThreshold: true
+      #     high: '${{ parameters.checkmarx_high_severity }}'
+      #     medium: '${{ parameters.checkmarx_medium_severity }}'
+      #     enablePolicyViolations: true
+      #     avoidDuplicateScans: true
+      #     enableDependencyScan: false
+
+      # # - task: Bash@3
+      # #   displayName: Salesforce selective validation
+      # #   condition: and(succeeded(), eq('True', '${{ parameters.Selective_Validation }}'))
+      # #   inputs:
+      # #     targetType: inline
+      # #     script: |
+      # #       ant -v -Dsf.username="${{ parameters.SF_VAL_USER }}" -Dhttps.protocols=TLSv1.1,TLSv1.2 -Dsf.password="${{ parameters.SF_VAL_PASS }}" -Dsf.serverurl='https://test.salesforce.com' -Dsfdc.pollWaitMillis=20000 -Dsfdc.maxPoll=2000 $(runner)
+      # #       if [ $? != 0 ]; then
+      # #       echo "Pipeline Failed while validating aginst Selective Validation Sandbox"
+      # #       echo "##vso[task.logissue type=error]Pipeline Failed while validating aginst Selective Validation Sandbox."
+      # #       exit 1
+      # #       fi
+
+
+      # - task: Bash@3
+      #   displayName: Salesforce validation and deployment to SIT
+      #   inputs:
+      #     targetType: inline
+      #     script: |
+      #       echo "*****Salesforce Validation against SIT Started*****"
+      #       ant -v -Dsf.username=${{ parameters.SFSIT_USER }} -Dhttps.protocols=TLSv1.1,TLSv1.2 -Dsf.password=${{ parameters.SFSIT_PASS }} -Dsf.serverurl='https://test.salesforce.com' -Dsfdc.pollWaitMillis=20000 -Dsfdc.maxPoll=2000 $(runner)
+      #       if [ $? != 0 ]; then
+      #       echo "Pipeline Failed while validating aginst SIT"
+      #       echo "##vso[task.logissue type=error]Pipeline Failed while validating aginst SIT."
+      #       exit 1
+      #       fi
+      #       echo "*****Salesforce deployment to SIT Started post successful validation*****"
+      #       ant -Dsf.username=${{ parameters.SFSIT_USER }} -Dhttps.protocols=TLSv1.1,TLSv1.2 -Dsf.password=${{ parameters.SFSIT_PASS }} -Dsf.serverurl='https://test.salesforce.com' -Dsfdc.pollWaitMillis=20000 -Dsfdc.maxPoll=2000 deploy
+      #       if [ $? != 0 ]; then
+      #         echo "Pipeline Failed while validating aginst SIT"
+      #         echo "##vso[task.logissue type=error]Pipeline Failed while validating aginst SIT."
+      #         exit 1
+      #       fi
+    
+      # - task: Bash@3
+      #   displayName: Merge the PR to SIT Branch
+      #   inputs:
+      #     targetType: inline
+      #     script: |
+      #       pwd
+      #       ls
+      #       git config --global user.email "c4edeployuser@ab-inbev.com"
+      #       git config --global user.name "c4edeployuser"
+      #       export AZURE_DEVOPS_EXT_PAT=$(System.AccessToken)
+      #       echo ${AZURE_DEVOPS_EXT_PAT} | az devops login --organization https://dev.azure.com/ab-inbev
+      #       az repos pr update --id ${{ parameters.PR_ID }}  --auto-complete true  --title "Automatic PR complete By Azure DevOps Pipeline"
+      #       if [ $? != 0 ]; then
+      #       echo "Pipeline Failed while merging PR"
+      #       echo "##vso[task.logissue type=error]Pipeline Failed while merging PR."
+      #       exit 1
+      #       fi            
+      #       git tag C4E-SITA-${{ parameters.PR_ID }} || true
+      #       git push --tags
+      #       # git -c http.extraheader="AUTHORIZATION: bearer $(System.AccessToken)" push --tags
+
+
+
+      # # - task: Bash@3
+      # #   displayName: Salesforce Deploy to SIT
+      # #   enabled: true
+      # #   inputs:
+      # #     targetType: inline
+      # #     script: |
+      # #       mkdir PRMERGED
+      # #       cd PRMERGED
+      # #       echo "****current working directory"
+      # #       pwd
+      # #       git config --global user.email "c4edeployuser@ab-inbev.com"
+      # #       git config --global user.name "c4edeployuser"
+      # #       git branch --show-current
+      # #       git clone -c http.extraheader="AUTHORIZATION: bearer $(System.AccessToken)" "$(System.CollectionUri)$(System.TeamProject)/_git/$(Build.Repository.Name)"
+      # #       git branch --show-current
+      # #       pwd
+      # #       ls
+      # #       # git pull
+      # #       git checkout ${TARGET_BRANCH}
+      # #       git branch --show-current
+      # #       pwd
+      # #       ls
+      # #       mv $(Build.Repository.Name)/*  $(Build.SourcesDirectory)/PRMERGED/
+      # #       ls
+      # #       rm -rf $(Build.Repository.Name)
+      # #       pwd
+      # #       ls
+      # #       mkdir tmp || true
+      # #       rm -rf tmp/*
+      # #       echo "****current working directory"
+      # #       pwd
+      # #       ls
+
+      # #       # cat -n $0
+      # #                 rsync -a --files-from=$(Build.SourcesDirectory)/Project-Manifest.txt --ignore-errors . tmp
+      # #         if [[ $? -gt 0 ]] || [[ ! -s $(Build.SourcesDirectory)/Project-Manifest.txt ]]
+      # #           then
+      # #           echo "Rsync project manifest files preparation Failed"
+      # #           echo "##vso[task.logissue type=error]Pullrequest is not deployable, Please check."
+      # #           exit 1
+      # #         else
+      # #           rm -rf src/*
+      # #           cp -R tmp/src/* src/
+      # #           rm -rf tmp || true
+      # #           find src
+      # #       echo "******git label content----$GIT_LABELS******"
+      # #           echo $GIT_LABELS > GIT_LABELS.txt
+      # #       cat GIT_LABELS.txt
+      # #           ## Read the Values of label in an array
+      # #           for APPLICATION_PREFIX in $(cat < "GIT_LABELS.txt"); do
+      # #           mv $(Build.SourcesDirectory)/PRMERGED/src/objects/$APPLICATION_PREFIX/*.object $(Build.SourcesDirectory)/PRMERGED/src/objects/ || true
+      # #           mv $(Build.SourcesDirectory)/PRMERGED/src/workflows/$APPLICATION_PREFIX/*.workflow $(Build.SourcesDirectory)/PRMERGED/src/workflows/ || true
+      # #           mv $(Build.SourcesDirectory)/PRMERGED/src/sharingRules/$APPLICATION_PREFIX/*.sharingRules $(Build.SourcesDirectory)/PRMERGED/src/sharingRules/ || true
+      # #           mv $(Build.SourcesDirectory)/PRMERGED/src/wave/$APPLICATION_PREFIX/* $(Build.SourcesDirectory)/PRMERGED/src/wave/ || true
+      # #           mv $(Build.SourcesDirectory)/PRMERGED/undeploy/$APPLICATION_PREFIX/destructiveChangesPre.xml $(Build.SourcesDirectory)/PRMERGED/src/ || true
+      # #           mv $(Build.SourcesDirectory)/PRMERGED/undeploy/$APPLICATION_PREFIX/destructiveChangesPost.xml $(Build.SourcesDirectory)/PRMERGED/src/ || true
+      # #           mv $(Build.SourcesDirectory)/build.xml $(Build.SourcesDirectory)/PRMERGED/build.xml || true
+      # #           echo "Rsync project manifest files preparation Done"
+      # #           mkdir src/labels || true
+      # #           rm src/labels/*.labels || true
+      # #           cp $(Build.SourcesDirectory)/src/labels/CustomLabels.labels $(Build.SourcesDirectory)/PRMERGED/src/labels/CustomLabels.labels || true
+      # #           done
+      # #         fi 
+      # #         ant generatePackage
+      # #         if [ $? != 0 ]; then
+      # #         echo "##vso[task.logissue type=error]Build failed while preparing build requirements post merge."
+      # #         exit 1
+      # #         fi
+      # #         ant -Dsf.username=${{ parameters.SFSIT_USER }} -Dhttps.protocols=TLSv1.1,TLSv1.2 -Dsf.password=${{ parameters.SFSIT_PASS }} -Dsf.serverurl='https://test.salesforce.com' -Dsfdc.pollWaitMillis=20000 -Dsfdc.maxPoll=2000 deploy
+      # #         if [ $? != 0 ]; then
+      # #         echo "Pipeline Failed while validating aginst SIT"
+      # #         echo "##vso[task.logissue type=error]Pipeline Failed while validating aginst SIT."
+      # #         exit 1
+      # #         fi
+
+      # - script: |
+      #     pwd
+      #     ls
+      #     grep -vwE "(<\\?xml version=\\"1.0\\" encoding=\\"UTF-8\\"\\?>|<CustomLabels xmlns=\\"http://soap.sforce.com/2006/04/metadata\\">|<\\/CustomLabels>)" $(Build.SourcesDirectory)/src/labels/CustomLabels.labels > $(Build.SourcesDirectory)/src/labels/CustomLabels.labels
+      #     cp Project-Manifest.txt Project-Manifest-${{ parameters.PR_ID }}.txt
+      #     ls
+      #     zip ${{ parameters.PR_ID }}.zip Project-Manifest-${{ parameters.PR_ID }}.txt GIT_LABELS.txt 
+      #     # rm -rf .git  
+      #   displayName: Artifacts preparation after deployment to SIT
+
+          
+
+      # - task: ArtifactoryGenericUpload@2
+      #   displayName: Storing Package in Artifactory
+      #   inputs:
+      #     artifactoryService: 'C4E-SFDC-Artifactory'
+      #     specSource: 'taskConfiguration'
+      #     fileSpec: |
+      #       {
+      #         "files": [
+      #           {
+      #             "pattern": "${{ parameters.PR_ID }}.zip",
+      #             "target": "${{ parameters.Project_Name }}/PRs/"
+      #           }
+      #         ]
+      #       }
+      #     failNoOp: true
+
+      - task: Bash@3
+        displayName: Preparing_Workspace
+        condition: succeededOrFailed()
+        inputs:
+          targetType: inline
+          script: |
+            rm -rf $(System.DefaultWorkingDirectory)/.git
+
+      - task: PublishBuildArtifacts@1
+        displayName: Saving_Workspace
+        inputs:
+          PathtoPublish: '$(System.DefaultWorkingDirectory)'
+          ArtifactName: 'SIT-Deployment-Workspace'
+          publishLocation: 'Container'
+        condition: succeededOrFailed()
+
+#####//Deploy to UAT Stage//#####
+- ${{ if contains(variables['Build.SourceBranchName'], 'UAT') }}:
+  - stage: 'UAT_Deployment_Stage'
+    displayName: 'UAT_Deployment_Stage'
+
+    jobs:
+    - deployment: 'UAT_Deployment_Job'
+      pool:
+        vmImage: ubuntu-latest
+      environment: SFDC-UAT-ENV
+      strategy:
+        runOnce:
+          deploy:
+            steps:
+            - checkout: self
+              persistCredentials: True
+
+            - task: JavaToolInstaller@0
+              displayName: Use Java 8
+              condition: eq('True', '${{ parameters.Enable_JAVA8 }}')
+              inputs:
+                jdkArchitectureOption: x64
+                jdkSourceOption: PreInstalled
+
+            - task: Bash@3
+              displayName: Fetch code from Azure Git
+              inputs:
+                targetType: inline
+                script: |
+                  # pwd
+                  # ls
+                  git config --global user.email "c4edeployuser@ab-inbev.com"
+                  git config --global user.name "c4edeployuser"
+                  git branch -a
+                  git clone -c http.extraheader="AUTHORIZATION: bearer $(System.AccessToken)" "$(System.CollectionUri)$(System.TeamProject)/_git/$(Build.Repository.Name)"
+                  mv $(Build.Repository.Name) Intermediate
+                  git branch -a
+                  cd Intermediate
+                  echo "****current working directory"
+                  pwd
+                  ls
+                  git checkout release/$(Build.SourceBranchName)
+                  git branch -a
+                  git checkout -f -b feature/INTERMEDIATE release/$(Build.SourceBranchName)
+                  if [ $? != 0 ]; then
+                  echo "Error while creating a local Intermediate Branch."
+                  echo "##vso[task.logissue type=error]Error while creating a local Intermediate Branch."
+                  exit 1
+                  fi              
+                  git branch --show-current
+                  # pwd
+                  # ls
+                  mkdir undeploy || true
+                  mkdir Build || true
+                  # echo "****current working directory"
+                  # pwd
+                  # ls
+
+
+
+            - task: CmdLine@2
+              displayName: Preparing Project Manifest
+              inputs:
+                script: |
+                  # pwd
+                  # ls
+                  git config --global user.email "c4edeployuser@ab-inbev.com"
+                  git config --global user.name "c4edeployuser"
+                  git branch -a
+                  git clone -c http.extraheader="AUTHORIZATION: bearer $(System.AccessToken)" "$(System.CollectionUri)$(System.TeamProject)/_git/$(Build.Repository.Name)"
+                  mv $(Build.Repository.Name) Source
+                  git branch -a
+                  cd Source
+                  echo "****current working directory"
+                  pwd
+                  ls
+                  git checkout release/$(Build.SourceBranchName)
+                  git branch -a
+                  PR_IDs=(${{ parameters.PR_ID }})
+                  for PR_ID in "${PR_IDs[@]}" 
+                  do
+                    echo $PR_ID
+                    c4e_Tags+=[C4E-SITA-$PR_ID]
+                    only_Prs+=[$PR_ID]
+                  done
+                  echo "${c4e_Tags[*]}"
+                  echo "${only_Prs[*]}" | tr '][' '|'
+                  # length of array:  echo ${#listoftags[@]}
+                  # length=${#listoftags[@]}            
+                  list_of_PR=$(echo "${c4e_Tags[*]}" | tr '][' '|')
+                  echo "**list of PRS**"
+                  echo ${list_of_PR}
+                  #git tag --sort=creatordate | grep -E -w "${list_of_PR}"
+                  LOP=$(git tag --sort=creatordate | grep -E -w "${list_of_PR}")
+                  echo "**LOP**"
+                  echo ${LOP}
+                  echo "**length of PRs**"
+                  PRs=($LOP)
+                  echo "PRs: ${PRs[@]}"
+                  echo "Number of PRs for deployment: ${#PRs[@]}"
+                  PRlength=${#PRs[@]}
+                  echo "PRlength is ${PRlength}"
+                  for PR in "${PRs[@]}"
+                  do
+                    PR_NO=$PR
+                    echo ${PR_NO}
+                    # echo ${PR_NO} | sed 's/C4E-SITA-//'
+                    ONLY_PR_NO=$(echo ${PR_NO} | sed 's/C4E-SITA-//')
+                    echo ${ONLY_PR_NO}
+                    git tag --sort=creatordate | grep -E -w C4E-UATA-"${ONLY_PR_NO}"    
+                    isTagPresent=$(git tag --sort=creatordate | grep -E -w C4E-UATA-"${ONLY_PR_NO}") 
+                    # echo "isTagPresent=${isTagPresent}"
+                    if [[ isTagPresent -eq C4E-UATA-${ONLY_PR_NO} ]]; then
+                      echo "Tag C4E-UATA-"${ONLY_PR_NO}" is already present."
+                      echo "##vso[task.logissue type=error]Tag C4E-UATA-"${ONLY_PR_NO}" is already present."
+                      exit 1
+                    else               
+                      echo "ONLY PR_NO IN git ORDER -- ${ONLY_PR_NO}"    
+                      echo "download from artifactory step " 
+                      curl  -sSf -H "X-JFrog-Art-Api:${{ parameters.artifactory_api_key }}" -O "https://abinbev.jfrog.io/artifactory/${{ parameters.Project_Name }}/PRs/${ONLY_PR_NO}.zip"
+                      ls
+                      pwd
+                      mkdir -p ${{ parameters.Project_Name }}/PRs
+                      unzip -o -d ./${{ parameters.Project_Name }}/PRs ${ONLY_PR_NO}.zip
+                      ls 
+
+                      echo "Verify local merge before tagging"
+                      git checkout -f -b feature/"${PR_NO}" "${PR_NO}"
+                      ls
+                      cat $(System.DefaultWorkingDirectory)/Source/${{ parameters.Project_Name }}/PRs/GIT_LABELS.txt >> $(System.DefaultWorkingDirectory)/Source/${{ parameters.Project_Name }}/PRs/GIT_LABELS_NEW.txt
+                      echo "" >> $(System.DefaultWorkingDirectory)/Source/${{ parameters.Project_Name }}/PRs/GIT_LABELS_NEW.txt
+                      cat $(System.DefaultWorkingDirectory)/Source/${{ parameters.Project_Name }}/PRs/GIT_LABELS_NEW.txt
+                      # ls $(System.DefaultWorkingDirectory)/Source/${{ parameters.Project_Name }}/PRs
+                      rsync -a --ignore-missing-args --files-from=$(System.DefaultWorkingDirectory)/Source/${{ parameters.Project_Name }}/PRs/Project-Manifest-${ONLY_PR_NO}.txt . $(System.DefaultWorkingDirectory)/Intermediate
+                      if [[ $? -gt 0 ]]
+                        then
+                        echo "Rsync project manifest files preparation Failed"
+                        echo "##vso[task.logissue type=error]Rsync project manifest files preparation Failed."
+                        exit 1
+                      else
+                        echo "Rsync project manifest files preparation done"
+                      fi
+                      cd '$(System.DefaultWorkingDirectory)/Intermediate'  && git add --all
+                      git diff-index --quiet HEAD || git commit -m "Adding ${ONLY_PR_NO} into intermediate branch"
+                      git tag C4E-UATA-"${ONLY_PR_NO}"
+                      git stash
+                      cd -
+                      # git tag -l
+                    fi
+                  done
+                  sort -u $(System.DefaultWorkingDirectory)/Source/${{ parameters.Project_Name }}/PRs/Project-Manifest-*.txt | uniq > $(System.DefaultWorkingDirectory)/COMBINED_MANIFEST.txt
+                  sort -u $(System.DefaultWorkingDirectory)/Source/${{ parameters.Project_Name }}/PRs/GIT_LABELS_NEW.txt | uniq > $(System.DefaultWorkingDirectory)/Source/${{ parameters.Project_Name }}/PRs/GIT_LABELS.txt
+
+
+                  mkdir $(System.DefaultWorkingDirectory)/Intermediate/tmp || true
+                  rm -rf $(System.DefaultWorkingDirectory)/Intermediate/tmp/* || true
+                  cp $(System.DefaultWorkingDirectory)/COMBINED_MANIFEST.txt  $(System.DefaultWorkingDirectory)/Intermediate/
+                  rsync -a --ignore-missing-args --files-from=$(System.DefaultWorkingDirectory)/Intermediate/COMBINED_MANIFEST.txt . $(System.DefaultWorkingDirectory)/Intermediate/tmp
+                  if [[ $? -gt 0 ]] || [[ ! -s $(System.DefaultWorkingDirectory)/Intermediate/COMBINED_MANIFEST.txt ]]
+                  then
+                    echo "Rsync project manifest files preparation Failed"
+                    echo "##vso[task.logissue type=error]Rsync project manifest files preparation Failed."
+                    exit 1
+                  else
+                    cd $(System.DefaultWorkingDirectory)/Source 
+                    rm -rf src/* || true
+                    rm -rf undeploy/* || true
+                    cp -R $(System.DefaultWorkingDirectory)/Intermediate/tmp/src/* src/ || true
+                    cp -R $(System.DefaultWorkingDirectory)/Intermediate/tmp/undeploy/* undeploy/ || true
+                    
+                    rm -rf $(System.DefaultWorkingDirectory)/Intermediate/tmp || true
+                    
+                    find src
+
+                      pwd
+                      ls $(System.DefaultWorkingDirectory)/Source/${{ parameters.Project_Name }}/PRs/
+                      for APPLICATION_PREFIX in $(cat < "$(System.DefaultWorkingDirectory)/Source/${{ parameters.Project_Name }}/PRs/GIT_LABELS.txt"); do
+                        mv $(System.DefaultWorkingDirectory)/Source/src/objects/$APPLICATION_PREFIX/*.object $(System.DefaultWorkingDirectory)/Source/src/objects/ || true
+                        mv $(System.DefaultWorkingDirectory)/Source/src/workflows/$APPLICATION_PREFIX/* $(System.DefaultWorkingDirectory)/Source/src/workflows/ || true
+                        mv $(System.DefaultWorkingDirectory)/Source/src/sharingRules/$APPLICATION_PREFIX/*.sharingRules $(System.DefaultWorkingDirectory)/Source/src/sharingRules/ || true
+                        mv $(System.DefaultWorkingDirectory)/Source/src/wave/$APPLICATION_PREFIX/* $(System.DefaultWorkingDirectory)/Source/src/wave/ || true
+
+                        cat $(System.DefaultWorkingDirectory)/Source/src/labels/$APPLICATION_PREFIX.labels >> $(System.DefaultWorkingDirectory)/Source/CustomLabels1.txt || true
+                        mkdir $(System.DefaultWorkingDirectory)/Intermediate/undeploy/$APPLICATION_PREFIX || true
+                        mkdir $(System.DefaultWorkingDirectory)/Intermediate/Build/$APPLICATION_PREFIX || true
+                        cp  -r $(System.DefaultWorkingDirectory)/Source/undeploy/$APPLICATION_PREFIX/* $(System.DefaultWorkingDirectory)/Intermediate/undeploy/$APPLICATION_PREFIX/ || true
+                        cp   -r $(System.DefaultWorkingDirectory)/Source/Build/$APPLICATION_PREFIX/*  $(System.DefaultWorkingDirectory)/Intermediate/Build/$APPLICATION_PREFIX/ || true
+                    
+                        mv $(System.DefaultWorkingDirectory)/Source/undeploy/$APPLICATION_PREFIX/destructiveChangesPre.xml $(System.DefaultWorkingDirectory)/Source/src/ || true
+                        mv $(System.DefaultWorkingDirectory)/Source/undeploy/$APPLICATION_PREFIX/destructiveChangesPost.xml $(System.DefaultWorkingDirectory)/Source/src/ || true
+                        mv  $(System.DefaultWorkingDirectory)/Source/Build/$APPLICATION_PREFIX/build.xml  $(System.DefaultWorkingDirectory)/Source/build.xml || true
+
+                        echo "Rsync project manifest files preparation Done"
+                      done
+
+                      rm -rf src/labels/* || true
+                      mkdir src/labels || true
+
+
+                    printf '<?xml version="1.0" encoding="UTF-8"?>\n<CustomLabels xmlns="http://soap.sforce.com/2006/04/metadata">\n' > $(System.DefaultWorkingDirectory)/Source/src/labels/CustomLabels.labels
+                        cat $(System.DefaultWorkingDirectory)/Source/CustomLabels1.txt >> $(System.DefaultWorkingDirectory)/Source/src/labels/CustomLabels.labels || true
+                        printf '\n</CustomLabels>' >> $(System.DefaultWorkingDirectory)/Source/src/labels/CustomLabels.labels
+
+                    mv $(System.DefaultWorkingDirectory)/Source/${{ parameters.Project_Name }}/PRs/GIT_LABELS.txt $(System.DefaultWorkingDirectory)/GIT_LABELS.txt
+
+                    fi
+
+                    ant generatePackage
+
+                    if [ $? != 0 ]; then
+                    echo "##vso[task.logissue type=error]Build failed while preparing manifest."
+                    exit 1
+                    fi
+
+
+
+            - task: Bash@3
+              displayName: Salesforce validation & deployment to UAT
+              inputs:
+                targetType: inline
+                workingDirectory: $(System.DefaultWorkingDirectory)/Source
+                script: |
+                  echo "******Salesforce validation against UAT Environment******"
+                  ant -v -Dsf.username=${{ parameters.SFUAT_USER }} -Dhttps.protocols=TLSv1.1,TLSv1.2 -Dsf.password=${{ parameters.SFUAT_PASS }} -Dsf.serverurl='https://test.salesforce.com' -Dsfdc.pollWaitMillis=20000 -Dsfdc.maxPoll=2000 validateNoTests
+                  if [ $? != 0 ]; then
+                    echo "Pipeline Failed while validating aginst UAT Sandbox"
+                    echo "##vso[task.logissue type=error]Pipeline Failed while validating aginst UAT Sandbox."
+                    exit 1
+                  fi
+
+                  echo "******Salesforce deployment to UAT Environment post successful validation******"
+                  ant -v -Dsf.username=${{ parameters.SFUAT_USER }} -Dhttps.protocols=TLSv1.1,TLSv1.2 -Dsf.password=${{ parameters.SFUAT_PASS }} -Dsf.serverurl='https://test.salesforce.com' -Dsfdc.pollWaitMillis=20000 -Dsfdc.maxPoll=2000 deploy
+                  if [ $? != 0 ]; then
+                    echo "Pipeline Failed while deploying to UAT"
+                    echo "##vso[task.logissue type=error]Pipeline Failed while deploying to UAT."
+                    exit 1
+                  fi
+
+            - task: Bash@3
+              displayName: Commit and push upstream   
+              inputs:
+                targetType: inline
+                workingDirectory: $(System.DefaultWorkingDirectory)/Intermediate
+                script: |
+                  echo "**Verify local merge before tagging**"
+                  git status
+                  git add --all              
+                  git diff-index --quiet HEAD || git commit -m 'Adding all pr related changes into intermediate branch'
+                  git push -u origin feature/INTERMEDIATE
+                  git tag -l
+                  git push -f --tags    
+                  if [ $? != 0 ]; then
+                  echo "Error while checking local merge"
+                    echo "##vso[task.logissue type=error]Pipeline Failed while while checking local merge."
+                    exit 1
+                  fi                      
+
+            - task: Bash@3
+              displayName: Create a PR and merge  
+              inputs:
+                targetType: inline
+                script: |            
+                  git config --global user.email "c4edeployuser@ab-inbev.com"
+                  git config --global user.name "c4edeployuser"
+                  export AZURE_DEVOPS_EXT_PAT=$(System.AccessToken)
+                  echo ${AZURE_DEVOPS_EXT_PAT} | az devops login --organization https://dev.azure.com/ab-inbev
+                  az repos pr create --project $(System.TeamProject) --repository $(Build.Repository.Name) --auto-complete true --delete-source-branch true --merge-commit-message "Automatic merge by Automatic PR complete By Azure DevOps Pipeline" --source-branch feature/INTERMEDIATE --target-branch release/$(Build.SourceBranchName) --title "Internal PR for UAT"
+                  # az repos pr update --id ${{ parameters.PR_ID }}  --auto-complete true  --title "Automatic PR complete By Azure DevOps Pipeline"
+                  if [ $? != 0 ]; then
+                  echo "Error while Merging PR to UAT"
+                  echo "##vso[task.logissue type=error]Pipeline Failed while Merging PR to UAT."
+                  exit 1
+                  fi
+                  rm -rf $(System.DefaultWorkingDirectory)/Source/.git    
+                  # sleep 30
+
+            # - task: Bash@3
+            #   displayName: Preparing build post merge to UAT 
+            #   enabled: true
+            #   inputs:
+            #     targetType: inline
+            #     script: |  
+            #       pwd
+            #       ls
+            #       git config --global user.email "c4edeployuser@ab-inbev.com"
+            #       git config --global user.name "c4edeployuser"
+            #       git branch -a
+            #       git clone -c http.extraheader="AUTHORIZATION: bearer $(System.AccessToken)" "$(System.CollectionUri)$(System.TeamProject)/_git/$(Build.Repository.Name)"
+            #       mv $(Build.Repository.Name) Mixer
+            #       git branch -a
+            #       cd Mixer
+            #       echo "****current working directory"
+            #       pwd
+            #       ls
+            #       git checkout $(Build.SourceBranchName)
+            #       git branch -a
+            #       mkdir tmp || true
+            #       rm -rf tmp/* || true
+            #       rsync -a --ignore-missing-args --files-from=$(System.DefaultWorkingDirectory)/COMBINED_MANIFEST.txt . tmp
+            #       if [[ $? -gt 0 ]] || [[ ! -s $(System.DefaultWorkingDirectory)/COMBINED_MANIFEST.txt ]]
+            #       then
+            #       echo "Rsync project manifest files preparation Failed"
+            #       exit 1
+            #       else
+            #         rm -rf src/* || true
+            #         cp -R tmp/src/* src/
+            #         rm -rf tmp || true
+            #         mkdir src/labels || true
+            #         rm -rf src/labels/*.labels || true
+            #         cp $(System.DefaultWorkingDirectory)/Source/src/labels/*   $(System.DefaultWorkingDirectory)/Mixer/src/labels/CustomLabels.labels || true
+            #         cp $(System.DefaultWorkingDirectory)/GIT_LABELS.txt $(System.DefaultWorkingDirectory)/Mixer/GIT_LABELS.txt || true
+
+            #         find src
+            #         for APPLICATION_PREFIX in $(cat < "$(System.DefaultWorkingDirectory)/Mixer/GIT_LABELS.txt"); do
+            #           mv $(System.DefaultWorkingDirectory)/Mixer/src/objects/$APPLICATION_PREFIX/*.object $(System.DefaultWorkingDirectory)/Mixer/src/objects/ || true
+            #           rm -rf $(System.DefaultWorkingDirectory)/Mixer/src/workflows/App360_CrossCharge__c.workflow || true
+            #           rm -rf  $(System.DefaultWorkingDirectory)/Mixer/src/workflows/Application__c.workflow || true
+            #           mv $(System.DefaultWorkingDirectory)/Mixer/src/workflows/$APPLICATION_PREFIX/*.workflow $(System.DefaultWorkingDirectory)/Mixer/src/workflows/ || true
+            #           mv $(System.DefaultWorkingDirectory)/Mixer/src/sharingRules/$APPLICATION_PREFIX/*.sharingRules $(System.DefaultWorkingDirectory)/Mixer/src/sharingRules/ || true
+            #           mv $(System.DefaultWorkingDirectory)/Mixer/src/wave/$APPLICATION_PREFIX/* $(System.DefaultWorkingDirectory)/Mixer/src/wave/ || true
+            #           mv $(System.DefaultWorkingDirectory)/Source/build.xml $(System.DefaultWorkingDirectory)/Mixer/build.xml || true
+
+            #           mv $(System.DefaultWorkingDirectory)/Mixer/undeploy/$APPLICATION_PREFIX/destructiveChangesPre.xml $(System.DefaultWorkingDirectory)/Mixer/src/ || true
+            #           mv $(System.DefaultWorkingDirectory)/Mixer/undeploy/$APPLICATION_PREFIX/destructiveChangesPost.xml $(System.DefaultWorkingDirectory)/Mixer/src/ || true
+              
+            #           done
+
+            #         echo "Rsync project manifest files preparation Done"
+            #       fi 
+
+            #       ant generatePackage            
+
+            #       if [ $? != 0 ]; then
+            #         echo "##vso[task.logissue type=error]Build failed while preparing build requirements."
+            #         exit 1
+            #       fi
+
+            #       echo "** Deploy to UAT**"
+            #       # ant -v -Dsf.username=${{ parameters.SFUAT_USER }} -Dhttps.protocols=TLSv1.1,TLSv1.2 -Dsf.password=${{ parameters.SFUAT_PASS }} -Dsf.serverurl='https://test.salesforce.com' -Dsfdc.pollWaitMillis=20000 -Dsfdc.maxPoll=2000 deploy
+            #       # if [ $? != 0 ]; then
+            #       #   echo "Pipeline Failed while deploying to UAT"
+            #       #   echo "##vso[task.logissue type=error]Pipeline Failed while deploying to UAT."
+            #       #   exit 1
+            #       # fi
+
+            # adding below task to keep get the pipeline workspace for troubleshooting
+            - task: PublishBuildArtifacts@1
+              displayName: Saving Workspace
+              inputs:
+                PathtoPublish: '$(System.DefaultWorkingDirectory)/Source'
+                ArtifactName: 'UAT-Deployment-Workspace'
+                publishLocation: 'Container'
+              condition: succeededOrFailed()
+
+#####//Deploy to PROD Stage//#####
+
+- ${{ if contains(variables['Build.SourceBranchName'], 'develop') }}:
+  - stage: 'PROD_Deployment_Stage'
+    displayName: 'PROD_Deployment_Stage'
+
+    jobs:
+    - deployment: 'PROD_Deployment_Job'
+      pool:
+        vmImage: ubuntu-latest
+      environment: SFDC-PROD-ENV
+      strategy:
+        runOnce:
+          deploy:
+            steps:
+            - checkout: self
+              persistCredentials: True
+
+            - task: JavaToolInstaller@0
+              condition: eq('True', '${{ parameters.Enable_JAVA8 }}')
+              displayName: Use Java 8
+              inputs:
+                jdkArchitectureOption: x64
+                jdkSourceOption: PreInstalled
+
+            - task: Bash@3
+              displayName: Fetch code from Azure Git
+              inputs:
+                targetType: inline
+                script: |
+                  # pwd
+                  # ls
+                  git config --global user.email "c4edeployuser@ab-inbev.com"
+                  git config --global user.name "c4edeployuser"
+                  git branch -a
+                  git clone -c http.extraheader="AUTHORIZATION: bearer $(System.AccessToken)" "$(System.CollectionUri)$(System.TeamProject)/_git/$(Build.Repository.Name)"
+                  mv $(Build.Repository.Name) Intermediate
+                  git branch -a
+                  cd Intermediate
+                  echo "****current working directory"
+                  pwd
+                  ls
+                  git checkout $(Build.SourceBranchName)
+                  git branch -a
+                  git checkout -f -b feature/INTERMEDIATE_PROD $(Build.SourceBranchName)
+                  if [ $? != 0 ]; then
+                  echo "Error while creating a local Intermediate Branch."
+                  echo "##vso[task.logissue type=error]Error while creating a local Intermediate Branch."
+                  exit 1
+                  fi              
+                  git branch --show-current
+                  # pwd
+                  # ls
+                  mkdir undeploy || true
+                  mkdir Build || true
+                  # echo "****current working directory"
+                  # pwd
+                  # ls
+
+
+            - task: CmdLine@2
+              displayName: Preparing Project Manifest
+              inputs:
+                script: |
+                  # pwd
+                  # ls
+                  git config --global user.email "c4edeployuser@ab-inbev.com"
+                  git config --global user.name "c4edeployuser"
+                  git branch -a
+                  git clone -c http.extraheader="AUTHORIZATION: bearer $(System.AccessToken)" "$(System.CollectionUri)$(System.TeamProject)/_git/$(Build.Repository.Name)"
+                  mv $(Build.Repository.Name) Source
+                  git branch -a
+                  cd Source
+                  echo "****current working directory"
+                  pwd
+                  ls
+                  git checkout $(Build.SourceBranchName)
+                  git branch -a
+                  PR_IDs=(${{ parameters.PR_ID }})
+                  for PR_ID in "${PR_IDs[@]}" 
+                  do
+                    echo $PR_ID
+                    c4e_Tags+=[C4E-SITA-$PR_ID]
+                    only_Prs+=[$PR_ID]
+                  done
+                  echo "${c4e_Tags[*]}"
+                  echo "${only_Prs[*]}" | tr '][' '|'
+                  # length of array:  echo ${#listoftags[@]}
+                  # length=${#listoftags[@]}            
+                  list_of_PR=$(echo "${c4e_Tags[*]}" | tr '][' '|')
+                  echo "**list of PRS**"
+                  echo ${list_of_PR}
+                  #git tag --sort=creatordate | grep -E -w "${list_of_PR}"
+                  LOP=$(git tag --sort=creatordate | grep -E -w "${list_of_PR}")
+                  echo "**LOP**"
+                  echo ${LOP}
+                  echo "**length of PRs**"
+                  PRs=($LOP)
+                  echo "PRs: ${PRs[@]}"
+                  echo "Number of PRs for deployment: ${#PRs[@]}"
+                  PRlength=${#PRs[@]}
+                  echo "PRlength is ${PRlength}"
+                  for PR in "${PRs[@]}"
+                  do
+                    PR_NO=$PR
+                    echo ${PR_NO}
+                    # echo ${PR_NO} | sed 's/C4E-SITA-//'
+                    ONLY_PR_NO=$(echo ${PR_NO} | sed 's/C4E-SITA-//')
+                    echo ${ONLY_PR_NO}
+                    git tag --sort=creatordate | grep -E -w C4E-PRODA-"${ONLY_PR_NO}"    
+                    isTagPresent=$(git tag --sort=creatordate | grep -E -w C4E-PRODA-"${ONLY_PR_NO}") 
+                    # echo "isTagPresent=${isTagPresent}"
+                    if [[ isTagPresent -eq C4E-PRODA-${ONLY_PR_NO} ]]; then
+                      echo "Tag C4E-PRODA-"${ONLY_PR_NO}" is already present."
+                      echo "##vso[task.logissue type=error]Tag C4E-PRODA-"${ONLY_PR_NO}" is already present."
+                      exit 1
+                    else               
+                      echo "ONLY PR_NO IN git ORDER -- ${ONLY_PR_NO}"    
+                      echo "download from artifactory step " 
+                      curl  -sSf -H "X-JFrog-Art-Api:${{ parameters.artifactory_api_key }}" -O "https://abinbev.jfrog.io/artifactory/${{ parameters.Project_Name }}/PRs/${ONLY_PR_NO}.zip"
+                      ls
+                      pwd
+                      mkdir -p ${{ parameters.Project_Name }}/PRs
+                      unzip -o -d ./${{ parameters.Project_Name }}/PRs ${ONLY_PR_NO}.zip
+                      ls 
+
+                      echo "Verify local merge before tagging"
+                      git checkout -f -b feature/"${PR_NO}" "${PR_NO}"
+                      ls
+                      cat $(System.DefaultWorkingDirectory)/Source/${{ parameters.Project_Name }}/PRs/GIT_LABELS.txt >> $(System.DefaultWorkingDirectory)/Source/${{ parameters.Project_Name }}/PRs/GIT_LABELS_NEW.txt
+                      echo "" >> $(System.DefaultWorkingDirectory)/Source/${{ parameters.Project_Name }}/PRs/GIT_LABELS_NEW.txt
+                      cat $(System.DefaultWorkingDirectory)/Source/${{ parameters.Project_Name }}/PRs/GIT_LABELS_NEW.txt
+                      ls $(System.DefaultWorkingDirectory)/Source/${{ parameters.Project_Name }}/PRs
+                      rsync -a --ignore-missing-args --files-from=$(System.DefaultWorkingDirectory)/Source/${{ parameters.Project_Name }}/PRs/Project-Manifest-${ONLY_PR_NO}.txt . $(System.DefaultWorkingDirectory)/Intermediate
+                      if [[ $? -gt 0 ]]
+                        then
+                        echo "Rsync project manifest files preparation Failed"
+                        echo "##vso[task.logissue type=error]Rsync project manifest files preparation Failed."
+                        exit 1
+                      else
+                        echo "Rsync project manifest files preparation done"
+                      fi
+                      cd '$(System.DefaultWorkingDirectory)/Intermediate'  && git add --all
+                      git diff-index --quiet HEAD || git commit -m "Adding ${ONLY_PR_NO} into intermediate branch"
+                      git tag C4E-PRODA-"${ONLY_PR_NO}"
+                      git stash
+                      cd -
+                      # git tag -l
+                    fi
+                  done
+                  sort -u $(System.DefaultWorkingDirectory)/Source/${{ parameters.Project_Name }}/PRs/Project-Manifest-*.txt | uniq > $(System.DefaultWorkingDirectory)/COMBINED_MANIFEST.txt
+                  sort -u $(System.DefaultWorkingDirectory)/Source/${{ parameters.Project_Name }}/PRs/GIT_LABELS_NEW.txt | uniq > $(System.DefaultWorkingDirectory)/Source/${{ parameters.Project_Name }}/PRs/GIT_LABELS.txt
+
+
+                  mkdir $(System.DefaultWorkingDirectory)/Intermediate/tmp || true
+                  rm -rf $(System.DefaultWorkingDirectory)/Intermediate/tmp/* || true
+                  cp $(System.DefaultWorkingDirectory)/COMBINED_MANIFEST.txt  $(System.DefaultWorkingDirectory)/Intermediate/
+                  rsync -a --ignore-missing-args --files-from=$(System.DefaultWorkingDirectory)/Intermediate/COMBINED_MANIFEST.txt . $(System.DefaultWorkingDirectory)/Intermediate/tmp
+                  if [[ $? -gt 0 ]] || [[ ! -s $(System.DefaultWorkingDirectory)/Intermediate/COMBINED_MANIFEST.txt ]]
+                  then
+                    echo "Rsync project manifest files preparation Failed"
+                    echo "##vso[task.logissue type=error]Rsync project manifest files preparation Failed."
+                    exit 1
+                  else
+                    cd $(System.DefaultWorkingDirectory)/Source 
+                    rm -rf src/* || true
+                    rm -rf undeploy/* || true
+                    cp -R $(System.DefaultWorkingDirectory)/Intermediate/tmp/src/* src/ || true
+                    cp -R $(System.DefaultWorkingDirectory)/Intermediate/tmp/undeploy/* undeploy/ || true
+                    
+                    rm -rf $(System.DefaultWorkingDirectory)/Intermediate/tmp || true
+                    
+                    find src
+
+                      # pwd
+                      # ls $(System.DefaultWorkingDirectory)/Source/${{ parameters.Project_Name }}/PRs/
+                      for APPLICATION_PREFIX in $(cat < "$(System.DefaultWorkingDirectory)/Source/${{ parameters.Project_Name }}/PRs/GIT_LABELS.txt"); do
+                        mv $(System.DefaultWorkingDirectory)/Source/src/objects/$APPLICATION_PREFIX/*.object $(System.DefaultWorkingDirectory)/Source/src/objects/ || true
+                        mv $(System.DefaultWorkingDirectory)/Source/src/workflows/$APPLICATION_PREFIX/* $(System.DefaultWorkingDirectory)/Source/src/workflows/ || true
+                        mv $(System.DefaultWorkingDirectory)/Source/src/sharingRules/$APPLICATION_PREFIX/*.sharingRules $(System.DefaultWorkingDirectory)/Source/src/sharingRules/ || true
+                        mv $(System.DefaultWorkingDirectory)/Source/src/wave/$APPLICATION_PREFIX/* $(System.DefaultWorkingDirectory)/Source/src/wave/ || true
+
+                        cat $(System.DefaultWorkingDirectory)/Source/src/labels/$APPLICATION_PREFIX.labels >> $(System.DefaultWorkingDirectory)/Source/CustomLabels1.txt || true
+                        mkdir $(System.DefaultWorkingDirectory)/Intermediate/undeploy/$APPLICATION_PREFIX || true
+                        mkdir $(System.DefaultWorkingDirectory)/Intermediate/Build/$APPLICATION_PREFIX || true
+                        cp  -r $(System.DefaultWorkingDirectory)/Source/undeploy/$APPLICATION_PREFIX/* $(System.DefaultWorkingDirectory)/Intermediate/undeploy/$APPLICATION_PREFIX/ || true
+                        cp   -r $(System.DefaultWorkingDirectory)/Source/Build/$APPLICATION_PREFIX/*  $(System.DefaultWorkingDirectory)/Intermediate/Build/$APPLICATION_PREFIX/ || true
+                    
+                        mv $(System.DefaultWorkingDirectory)/Source/undeploy/$APPLICATION_PREFIX/destructiveChangesPre.xml $(System.DefaultWorkingDirectory)/Source/src/ || true
+                        mv $(System.DefaultWorkingDirectory)/Source/undeploy/$APPLICATION_PREFIX/destructiveChangesPost.xml $(System.DefaultWorkingDirectory)/Source/src/ || true
+                        mv  $(System.DefaultWorkingDirectory)/Source/Build/$APPLICATION_PREFIX/build.xml  $(System.DefaultWorkingDirectory)/Source/build.xml || true
+
+                        echo "Rsync project manifest files preparation Done"
+                      done
+
+                      rm -rf src/labels/* || true
+                      rm -rf $(System.DefaultWorkingDirectory)/Source/src/contentassets/sp_zoomiconlogo.asset
+                      rm -rf $(System.DefaultWorkingDirectory)/Source/src/contentassets/sp_zoomiconlogo.asset-meta.xml
+                      mkdir src/labels || true
+
+
+                    printf '<?xml version="1.0" encoding="UTF-8"?>\n<CustomLabels xmlns="http://soap.sforce.com/2006/04/metadata">\n' > $(System.DefaultWorkingDirectory)/Source/src/labels/CustomLabels.labels
+                        cat $(System.DefaultWorkingDirectory)/Source/CustomLabels1.txt >> $(System.DefaultWorkingDirectory)/Source/src/labels/CustomLabels.labels || true
+                        printf '\n</CustomLabels>' >> $(System.DefaultWorkingDirectory)/Source/src/labels/CustomLabels.labels
+
+                    mv $(System.DefaultWorkingDirectory)/Source/${{ parameters.Project_Name }}/PRs/GIT_LABELS.txt $(System.DefaultWorkingDirectory)/GIT_LABELS.txt
+
+                    fi
+
+                    ant generatePackage
+
+                    if [ $? != 0 ]; then
+                    echo "##vso[task.logissue type=error]Build failed while preparing manifest."
+                    exit 1
+                    fi
+
+
+
+
+            - task: Bash@3
+              displayName: Salesforce validation against PROD
+              inputs:
+                targetType: inline
+                workingDirectory: $(System.DefaultWorkingDirectory)/Source
+                script: |
+                  ant -v -Dsf.username=${{ parameters.SFPROD_USER }} -Dhttps.protocols=TLSv1.1,TLSv1.2 -Dsf.password=${{ parameters.SFPROD_PASS }} -Dsf.serverurl='https://login.salesforce.com' -Dsfdc.pollWaitMillis=20000 -Dsfdc.maxPoll=2000 validate
+                  if [ $? != 0 ]; then
+                  echo "Pipeline Failed while validating aginst PROD Sandbox"
+                  echo "##vso[task.logissue type=error]Pipeline Failed while validating aginst PROD Sandbox."
+                  exit 1
+                  fi
+
+
+            - task: Bash@3
+              displayName: Commit and push upstream
+              condition: and(succeeded(), eq('False', '${{ parameters.PROD_PR_VALIDATION_ONLY }}'))
+              inputs:
+                targetType: inline
+                workingDirectory: $(System.DefaultWorkingDirectory)/Intermediate
+                script: |
+                  echo "**Verify local merge before tagging**"
+                  git status
+                  git add --all              
+                  git diff-index --quiet HEAD || git commit -m 'Adding all pr related changes into intermediate branch'
+                  git push  -u origin feature/INTERMEDIATE_PROD    
+                  git push  -f --tags    
+                  if [ $? != 0 ]; then
+                  echo "Error while checking local merge"
+                    echo "##vso[task.logissue type=error]Pipeline Failed while while checking local merge."
+                    exit 1
+                  fi   
+                    
+         
+
+            - task: Bash@3
+              displayName: Create a PR and merge
+              condition: and(succeeded(), eq('False', '${{ parameters.PROD_PR_VALIDATION_ONLY }}'))
+              inputs:
+                targetType: inline
+                script: |            
+                  git config --global user.email "c4edeployuser@ab-inbev.com"
+                  git config --global user.name "c4edeployuser"
+                  export AZURE_DEVOPS_EXT_PAT=$(System.AccessToken)
+                  echo ${AZURE_DEVOPS_EXT_PAT} | az devops login --organization https://dev.azure.com/ab-inbev
+                  az repos pr create --project $(System.TeamProject) --repository $(Build.Repository.Name) --auto-complete true --delete-source-branch true --merge-commit-message "Automatic merge by Automatic PR complete By Azure DevOps Pipeline" --source-branch feature/INTERMEDIATE_PROD --target-branch $(Build.SourceBranchName) --title "Internal PR for PROD"
+                  # az repos pr update --id ${{ parameters.PR_ID }}  --auto-complete true  --title "Automatic PR complete By Azure DevOps Pipeline"
+                  if [ $? != 0 ]; then
+                  echo "Error while Merging PR to PROD"
+                  echo "##vso[task.logissue type=error]Pipeline Failed while Merging PR to PROD."
+                  exit 1
+                  fi   
+                  rm -rf $(System.DefaultWorkingDirectory)/Source/.git         
+
+            # adding below task to keep get the pipeline workspace for troubleshooting
+            - task: PublishBuildArtifacts@1
+              displayName: Saving Workspace
+              inputs:
+                PathtoPublish: '$(System.DefaultWorkingDirectory)/Source'
+                ArtifactName: 'PROD-Deployment-Workspace'
+                publishLocation: 'Container'
+              condition: succeededOrFailed()           
